@@ -1,0 +1,112 @@
+# Build do app desktop do Venda Perfeita pro macOS.
+#
+# Fica neste repo público de propósito: aqui o runner macOS é grátis e sem
+# limite de minutos, e no venda-perfeita (privado) cada minuto de Mac é cobrado.
+# O código continua privado:
+#   - o checkout usa SOURCE_SSH_KEY, chave de deploy só leitura do venda-perfeita;
+#   - log de repo público é público, então a tela mostra só as linhas "==>" e
+#     "ERRO" do build-mac.sh. O log completo sobe cifrado (artefato build-log)
+#     e abre com `bash desktop/scripts/mac-ci.sh log <id do run>`.
+#
+# Dispara pelo release.sh do venda-perfeita ou em Actions > Mac > Run workflow.
+# Sem gatilho de pull request: PR de fork nunca chega perto dos secrets.
+#
+# Secrets (o desktop/scripts/mac-ci.sh do venda-perfeita preenche todos):
+#   SOURCE_SSH_KEY, BUILD_LOG_KEY
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID, APPLE_PASSWORD,
+#   APPLE_TEAM_ID (sem eles o app sai ad-hoc, só pra testar)
+
+name: Mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão (ex: 3.10.6). Vazio = a do desktop/package.json"
+        required: false
+      ref:
+        description: "Branch ou commit do venda-perfeita"
+        required: false
+        default: main
+
+# O GITHUB_TOKEN só precisa anexar o .dmg na release deste repo.
+permissions:
+  contents: write
+
+concurrency:
+  group: mac
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build macOS universal
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - name: Código do venda-perfeita
+        uses: actions/checkout@v4
+        with:
+          repository: ThiagoC0STA/venda-perfeita
+          ref: ${{ inputs.ref || 'main' }}
+          ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
+          path: src
+          persist-credentials: false
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Cache do Rust
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src/desktop/src-tauri/target
+            src/desktop/stt-parakeet/target
+          key: mac-cargo-${{ hashFiles('src/desktop/src-tauri/Cargo.lock', 'src/desktop/stt-parakeet/Cargo.lock') }}
+          restore-keys: mac-cargo-
+
+      - name: Build, assinatura, notarização e upload
+        env:
+          VERSION: ${{ inputs.version }}
+          UPLOAD: "1"
+          RELEASES_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set +e
+          bash src/desktop/scripts/build-mac.sh 2>&1 | tee build.log | grep --line-buffered -E '^(==>|ERRO)'
+          exit "${PIPESTATUS[0]}"
+
+      # Roda mesmo com falha: é quando o log mais faz falta. O texto puro nunca
+      # sobe; sem BUILD_LOG_KEY o passo só apaga o log.
+      - name: Log cifrado
+        if: always()
+        env:
+          BUILD_LOG_KEY: ${{ secrets.BUILD_LOG_KEY }}
+        run: |
+          if [[ -f build.log && -n "$BUILD_LOG_KEY" ]]; then
+            OPENSSL="$(brew --prefix openssl@3)/bin/openssl"
+            [[ -x "$OPENSSL" ]] || brew install openssl@3 >/dev/null
+            "$OPENSSL" enc -aes-256-cbc -pbkdf2 -iter 200000 -md sha256 -salt \
+              -in build.log -out build.log.enc -pass env:BUILD_LOG_KEY
+          fi
+          rm -f build.log
+
+      - name: Sobe o log cifrado
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log.enc
+          if-no-files-found: ignore
+          retention-days: 7
