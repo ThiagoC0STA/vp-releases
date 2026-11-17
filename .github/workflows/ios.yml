@@ -1,18 +1,20 @@
-# Build do app do iPhone do Venda Perfeita e envio pro TestFlight.
+# Build do app do iPhone do Venda Perfeita (app nativo Expo, pasta native/) e envio pro TestFlight.
 #
 # Este arquivo mora no repo público vp-releases (.github/workflows/ios.yml),
 # pelo mesmo motivo do mac.yml: lá o runner macOS é grátis. A cópia em
-# venda-perfeita/mobile/ci/ios.yml é a fonte; mudou aqui, copia pra lá.
+# venda-perfeita/native/ci/ios.yml é a fonte; mudou aqui, copia pra lá.
 #   - o checkout usa SOURCE_SSH_KEY, chave de deploy só leitura do venda-perfeita;
 #   - a tela mostra só as linhas "==>" e "ERRO" do build-ios.sh. O log completo
 #     sobe cifrado e abre com `bash desktop/scripts/mac-ci.sh log <id do run>`.
 #
 # Sem gatilho de pull request: PR de fork nunca chega perto dos secrets.
 #
+# O app importa módulos puros do site, então o checkout leva native/, src/ e messages/.
+#
 # Secrets:
 #   SOURCE_SSH_KEY, BUILD_LOG_KEY, APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID (já existem, do Mac)
 #   IOS_CERTIFICATE, IOS_CERTIFICATE_PASSWORD, IOS_PROVISIONING_PROFILE
-#   (o mobile/scripts/ios-ci.sh do venda-perfeita preenche os três)
+#   (certificado e perfil da conta Apple; ver native/README.md)
 
 name: iOS
 
@@ -20,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Versão (ex: 1.0.0). Vazio = a do mobile/package.json"
+        description: "Versão (ex: 1.0.0). Vazio = a do native/app.json"
         required: false
       ref:
         description: "Branch ou commit do venda-perfeita"
@@ -48,7 +50,10 @@ jobs:
           ssh-key: ${{ secrets.SOURCE_SSH_KEY }}
           path: src
           persist-credentials: false
-          sparse-checkout: mobile
+          sparse-checkout: |
+            native
+            src
+            messages
 
       - name: Node
         uses: actions/setup-node@v4
@@ -67,7 +72,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set +e
-          bash src/mobile/scripts/build-ios.sh 2>&1 | tee build.log | grep --line-buffered -E '^(==>|ERRO)'
+          bash src/native/scripts/build-ios.sh 2>&1 | tee build.log | grep --line-buffered -E '^(==>|ERRO)'
           exit "${PIPESTATUS[0]}"
 
       # Roda mesmo com falha: é quando o log mais faz falta. O texto puro nunca
